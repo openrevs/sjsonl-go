@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SJSONL is a Go library and CLI tool for cryptographically signing, verifying, diffing, and patching JSON Lines (JSONL) documents using Ed25519 signatures. Documents are treated as line **sets** (unordered, no duplicates). See SPEC.md for the full specification and README.md for design rationale.
+SJSONL is a Go library and CLI tool for cryptographically signing, verifying, diffing, and patching JSON Lines (JSONL) documents using Ed25519 signatures. Documents are treated as line **sets** (unordered, no duplicates). The specification, including design rationale, now lives in the OpenRevs website repo at `../website/specs/sjsonl.md` (published at https://openrevs.org/specs/sjsonl/).
 
 ## Build & Test Commands
 
