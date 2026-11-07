@@ -17,7 +17,7 @@ sjsonl <command> [arguments]
 ### Commands
 
 #### keygen
-Generates a new Ed25519 private key encoded as lowercase hex.
+Generates a new Ed25519 private key encoded as standard base64.
 
 ```bash
 sjsonl keygen [filename]
@@ -29,7 +29,7 @@ sjsonl keygen my_private.key
 sjsonl keygen  # Creates private.key
 ```
 
-The generated key file has secure permissions (0600) and contains a hex-encoded private key.
+The generated key file has secure permissions (0600) and contains a base64-encoded private key.
 
 #### sign
 Signs a JSONL file with an Ed25519 private key. The key can be provided via file, environment variable, or generated automatically.
@@ -64,9 +64,9 @@ sjsonl verify signed_data.jsonl
 **Output:**
 ```
 Verification successful!
-Hash: 51a3b004e0dfe95a72dae9956adc71ae
+Hash: 51a3b004e0dfe95a72dae9956adc71ae3f8c1d27b94e6a05c2d18f7e4b9a6c13
 Signer ID: 13b63c616580d9e3635fb1d5414eb0b88017a8e8d3693c741479cec5bfdce4f6
-Signer Key: 8e4a16bc4e443f860b5e29dddf02cc99a7ad43ff51b8b9e36e5cde1ed520e141
+Signer Key: jkoWvE5EP4YLXind3wLMmaetQ/9RuLnjblzeHtUg4UE=
 ```
 
 #### diff
@@ -130,10 +130,12 @@ Here's a complete workflow demonstrating all operations:
 ## Key Management
 
 ### Private Key Format
-Private keys are stored as lowercase hex strings. This format is:
-- Consistent with every other encoded value in the SJSONL format
-- Unambiguous (no alphabet or padding variants)
+Private keys are stored as standard base64 strings (RFC 4648, with padding). This format is:
+- Consistent with how public keys and signatures are encoded in the SJSONL format
+- Compact
 - Safe for environment variables and command-line usage
+
+Surrounding whitespace (such as a trailing newline) in a key file or environment variable is ignored.
 
 ### Security Considerations
 - Private key files are created with 0600 permissions (owner read/write only)

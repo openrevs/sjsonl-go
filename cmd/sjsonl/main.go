@@ -3,10 +3,11 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/kalafut/sjsonl"
 )
@@ -65,7 +66,7 @@ Usage:
   sjsonl patch <base.jsonl> <patch.jsonl> - Apply a patch to a base JSONL file
 
 Commands:
-  keygen   Generates a new Ed25519 private key (hex encoded)
+  keygen   Generates a new Ed25519 private key (base64 encoded)
   sign     Signs the input JSONL file with a private key from file or env var
   verify   Verifies a signed JSONL file and displays information about it
   diff     Creates a patch document representing differences between two files.
@@ -98,8 +99,8 @@ func handleKeygen() {
 		os.Exit(1)
 	}
 
-	// Encode private key as hex
-	encoded := hex.EncodeToString(privateKey)
+	// Encode private key as base64
+	encoded := base64.StdEncoding.EncodeToString(privateKey)
 
 	err = os.WriteFile(filename, []byte(encoded), 0600)
 	if err != nil {
@@ -190,7 +191,7 @@ func handleVerify() {
 	fmt.Printf("Verification successful!\n")
 	fmt.Printf("Hash: %s\n", info.Hash)
 	fmt.Printf("Signer ID: %s\n", info.SignerID)
-	fmt.Printf("Signer Key: %x\n", info.SignerKey)
+	fmt.Printf("Signer Key: %s\n", base64.StdEncoding.EncodeToString(info.SignerKey))
 }
 
 func handleDiff() {
@@ -288,8 +289,8 @@ func readPrivateKeyFromFile(filename string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 
-	// Decode hex
-	privateKey, err := hex.DecodeString(string(data))
+	// Decode base64
+	privateKey, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(string(data)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode private key: %v", err)
 	}
@@ -307,8 +308,8 @@ func readPrivateKeyFromEnv() (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("SJSONL_PRIVATE_KEY environment variable not set")
 	}
 
-	// Decode hex
-	privateKey, err := hex.DecodeString(keyStr)
+	// Decode base64
+	privateKey, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(keyStr))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode private key from environment: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -208,7 +209,7 @@ func TestPatchAddsDuplicate(t *testing.T) {
 	// detected before the target hash or signature is checked.
 	patchData := fmt.Sprintf(`{"sjsonl":"patch","version":"0.1","key":"%s","sig":"%s","base":"%s","target":"%s","rm":[]}
 {"a":1}
-`, strings.Repeat("6b", 32), strings.Repeat("73", 64), src.hash(), strings.Repeat("7a", 32))
+`, base64.StdEncoding.EncodeToString(make([]byte, 32)), base64.StdEncoding.EncodeToString(make([]byte, 64)), src.hash(), strings.Repeat("7a", 32))
 
 	p, err := ParsePatch([]byte(patchData))
 	require.NoError(err)
@@ -385,8 +386,8 @@ func TestPatchVerifiesSignature(t *testing.T) {
 
 	// A corrupted signature is rejected through the public API too.
 	_, tgt2, p2 := patchFixture(t)
-	good := hex.EncodeToString(tgt2.ctl.signature)
-	bad := strings.Repeat("0", len(good))
+	good := base64.StdEncoding.EncodeToString(tgt2.ctl.signature)
+	bad := strings.Repeat("A", len(good)-2) + "=="
 	data := strings.Replace(string(p2.JSON()), good, bad, 1)
 	require.NotEqual(string(p2.JSON()), data)
 

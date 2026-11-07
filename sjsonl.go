@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -161,8 +162,8 @@ func (ctl controlLine) JSON() string {
 	}{
 		SJSONL:  docType,
 		Version: formatVersion,
-		Key:     hex.EncodeToString(ctl.publicKey),
-		Sig:     hex.EncodeToString(ctl.signature),
+		Key:     base64.StdEncoding.EncodeToString(ctl.publicKey),
+		Sig:     base64.StdEncoding.EncodeToString(ctl.signature),
 		Base:    ctl.base,
 		Target:  ctl.target,
 	}
@@ -365,7 +366,7 @@ func parseControlLine(line []byte) (*controlLine, error) {
 
 	if signed {
 		// Validate public key format and length
-		pubKeyBytes, err := decodeHex(keyRaw.String())
+		pubKeyBytes, err := decodeBase64(keyRaw.String())
 		if err != nil || keyRaw.Type != gjson.String {
 			return nil, ErrBadKeyFormat
 		}
@@ -374,7 +375,7 @@ func parseControlLine(line []byte) (*controlLine, error) {
 		}
 
 		// Validate signature format and length
-		sigBytes, err := decodeHex(sigRaw.String())
+		sigBytes, err := decodeBase64(sigRaw.String())
 		if err != nil {
 			return nil, fmt.Errorf("%w: invalid signature decoding: %w", ErrBadSigFormat, err)
 		}
@@ -521,12 +522,19 @@ func isLowerHex(s string) bool {
 	return true
 }
 
-// decodeHex decodes a lowercase hex string.
-func decodeHex(s string) ([]byte, error) {
-	if !isLowerHex(s) {
-		return nil, errors.New("not lowercase hex")
+// decodeBase64 decodes a standard, padded base64 string, accepting only the
+// canonical encoding so every value has exactly one valid representation.
+// Re-encoding and comparing rejects non-zero trailing bits, bad padding and
+// the embedded newlines that Go's decoder otherwise skips.
+func decodeBase64(s string) ([]byte, error) {
+	b, err := base64.StdEncoding.Strict().DecodeString(s)
+	if err != nil {
+		return nil, err
 	}
-	return hex.DecodeString(s)
+	if base64.StdEncoding.EncodeToString(b) != s {
+		return nil, errors.New("non-canonical base64")
+	}
+	return b, nil
 }
 
 // snippet returns a truncated copy of line suitable for error messages.

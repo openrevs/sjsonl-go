@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -25,8 +25,8 @@ func TestValid(t *testing.T) {
 }
 
 func TestParseControlLine(t *testing.T) {
-	fakeKey := strings.Repeat("6b", 32)
-	fakeSig := strings.Repeat("73", 64)
+	fakeKey := b64(0x6b, 32)
+	fakeSig := b64(0x73, 64)
 	fakeBase := strings.Repeat("ba", 32)
 	fakeTarget := strings.Repeat("7a", 32)
 
@@ -52,22 +52,64 @@ func TestParseControlLine(t *testing.T) {
 			ctlType:   sign,
 		},
 		{
-			name:      "invalid hex in key",
-			input:     []byte(`{"sjsonl": "doc", "key": "invalid@hex!", "sig": "abcd"}`),
+			name:      "invalid base64 in key",
+			input:     []byte(`{"sjsonl": "doc", "key": "invalid@b64!", "sig": "abcd"}`),
 			expectErr: true,
 			errType:   ErrBadKeyFormat,
 			ctlType:   sign,
 		},
 		{
-			name:      "invalid hex in sig",
-			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "invalid@hex!"}`, fakeKey),
+			name:      "invalid base64 in sig",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "invalid@b64!"}`, fakeKey),
 			expectErr: true,
 			errType:   ErrBadSigFormat,
 			ctlType:   sign,
 		},
 		{
-			name:      "uppercase hex in key",
-			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, strings.ToUpper(fakeKey), fakeSig),
+			name:      "hex key",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, strings.Repeat("6b", 32), fakeSig),
+			expectErr: true,
+			errType:   ErrBadKeyFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "non-canonical key (trailing bits set)",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, setTrailingBits(fakeKey), fakeSig),
+			expectErr: true,
+			errType:   ErrBadKeyFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "non-canonical sig (trailing bits set)",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, fakeKey, setTrailingBits(fakeSig)),
+			expectErr: true,
+			errType:   ErrBadSigFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "unpadded key",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, strings.TrimRight(fakeKey, "="), fakeSig),
+			expectErr: true,
+			errType:   ErrBadKeyFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "unpadded sig",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, fakeKey, strings.TrimRight(fakeSig, "=")),
+			expectErr: true,
+			errType:   ErrBadSigFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "url-safe alphabet in key",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, base64.URLEncoding.EncodeToString(bytes.Repeat([]byte{0xfb}, 32)), fakeSig),
+			expectErr: true,
+			errType:   ErrBadKeyFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "embedded newline in key",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s\n%s", "sig": "%s"}`, fakeKey[:20], fakeKey[20:], fakeSig),
 			expectErr: true,
 			errType:   ErrBadKeyFormat,
 			ctlType:   sign,
@@ -220,8 +262,8 @@ func TestParseControlLine(t *testing.T) {
 
 	testMessage := []byte("test message")
 	signature := ed25519.Sign(privateKey, testMessage)
-	pubKeyEncoded := hex.EncodeToString(publicKey)
-	sigEncoded := hex.EncodeToString(signature)
+	pubKeyEncoded := base64.StdEncoding.EncodeToString(publicKey)
+	sigEncoded := base64.StdEncoding.EncodeToString(signature)
 
 	// Add tests with real keys
 	realKeyTests := []struct {
@@ -425,8 +467,8 @@ func TestCleanAndValidate(t *testing.T) {
 		},
 		{
 			name:     "signature line - should pass basic validation",
-			input:    fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, strings.Repeat("6b", 32), strings.Repeat("73", 64)),
-			expected: fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, strings.Repeat("6b", 32), strings.Repeat("73", 64)),
+			input:    fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, b64(0x6b, 32), b64(0x73, 64)),
+			expected: fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, b64(0x6b, 32), b64(0x73, 64)),
 		},
 	}
 
@@ -498,7 +540,7 @@ func TestLineParseCore(t *testing.T) {
 		},
 		{
 			name:      "parse mode with invalid signature key length",
-			lines:     [][]byte{fmt.Appendf(nil, `{"sjsonl": "doc", "key": "abcd", "sig": "%s"}`, strings.Repeat("73", 64))},
+			lines:     [][]byte{fmt.Appendf(nil, `{"sjsonl": "doc", "key": "abcd", "sig": "%s"}`, b64(0x73, 64))},
 			mode:      parse,
 			expectErr: true,
 		},
@@ -694,4 +736,17 @@ func TestParseUnsignedPatchControlLine(t *testing.T) {
 	out := ctl.JSON()
 	require.NotContains(t, out, `"key"`)
 	require.NotContains(t, out, `"sig"`)
+}
+
+// setTrailingBits returns s with the unused low bits of its last data
+// character set, producing a non-canonical encoding of the same bytes.
+func setTrailingBits(s string) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	i := len(strings.TrimRight(s, "=")) - 1
+	return s[:i] + string(alphabet[strings.IndexByte(alphabet, s[i])|1]) + s[i+1:]
+}
+
+// b64 returns the standard base64 encoding of n copies of byte c.
+func b64(c byte, n int) string {
+	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{c}, n))
 }

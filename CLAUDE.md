@@ -47,7 +47,7 @@ A single Go module (`github.com/kalafut/sjsonl`):
 
 Key design points:
 - Lines are a **set** — order doesn't matter, duplicates are errors
-- All binary values (hashes, keys, signatures) are encoded as lowercase hex
+- Hashes (line hashes, document hash, `base`/`target`, `rm` prefixes, Signer ID) are lowercase hex; keys and signatures are standard padded base64, decoded strictly so only the canonical encoding is accepted
 - The `JSONL` struct holds parsed `hashedLine` entries and a `controlLine` with signature metadata
 - The internal `linesParseCore` function handles sign, parse, and patch modes via a mode parameter
 - `gjson` is used for JSON validation (faster than stdlib `json.Valid`)
