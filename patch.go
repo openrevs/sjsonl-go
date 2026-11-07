@@ -1,6 +1,7 @@
 package sjsonl
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -11,7 +12,10 @@ import (
 )
 
 func (src *JSONL) Patch(patch *JSONL) (*JSONL, error) {
-	// Calculate src hash (don't just rely on the hash from the control line)
+	// The patch must have been generated against this exact document.
+	if srcHash := src.hash(); srcHash != patch.ctl.base {
+		return nil, fmt.Errorf("%w: base %s, document %s", ErrBaseMismatch, patch.ctl.base, srcHash)
+	}
 
 	// Remove lines from src
 	newLineSet := make([]hashedLine, 0, len(src.lines))
@@ -44,10 +48,6 @@ outer:
 		}
 	}
 
-	// TODO: check base ref
-	// TODO: verify hash
-	// TODO: verify signature
-
 	jsonl := JSONL{
 		lines: newLineSet,
 		ctl: controlLine{
@@ -57,7 +57,22 @@ outer:
 		},
 	}
 
+	if patch.ctl.publicKey == nil {
+		jsonl.ctl.ctlType = unsigned
+	}
+
 	jsonl.info = newInfo(&jsonl)
+
+	if jsonl.info.Hash != patch.ctl.target {
+		return nil, fmt.Errorf("%w: target %s, patched %s", ErrTargetMismatch, patch.ctl.target, jsonl.info.Hash)
+	}
+
+	if jsonl.ctl.ctlType == sign {
+		msg := concatLineHashes(newLineSet)
+		if !ed25519.Verify(jsonl.ctl.publicKey, msg, jsonl.ctl.signature) {
+			return nil, ErrSigVerificationFailed
+		}
+	}
 
 	return &jsonl, nil
 }

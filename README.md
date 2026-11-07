@@ -13,6 +13,7 @@ go build -o sjsonl ./cmd/sjsonl
 ./sjsonl sign data.jsonl -k private.key > signed.jsonl
 ./sjsonl verify signed.jsonl
 ./sjsonl diff base.jsonl target.jsonl > patch.jsonl
+./sjsonl diff --unsigned base.jsonl target.jsonl > patch.jsonl  # no key/sig
 ./sjsonl patch base.jsonl patch.jsonl > result.jsonl
 ```
 
@@ -26,7 +27,10 @@ import sjsonl "github.com/kalafut/sjsonl"
 signed, info, err := sjsonl.Sign(data, privateKey)
 info, err := sjsonl.Verify(signed)
 patch, err := sjsonl.Diff(base, target)
+patch, err := sjsonl.DiffUnsigned(base, target)
 result, info, err := sjsonl.Patch(base, patch)
 ```
 
 `Info` reports the document hash, the signer's public key, and a signer ID (SHA256 of the public key).
+
+`Patch` checks the patch's `base` and `target` document hashes and, for a signed patch, verifies the result's signature. Patches may omit `key` and `sig` for use in trusted environments. Applying an unsigned patch yields plain JSONL (no header line) with an empty signer in `Info`.

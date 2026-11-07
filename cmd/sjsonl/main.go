@@ -61,14 +61,15 @@ Usage:
   sjsonl keygen [filename]        - Generate a new Ed25519 private key
   sjsonl sign <input.jsonl> [-k keyfile] - Sign a JSONL file with a private key
   sjsonl verify <signed.jsonl>    - Verify a signed JSONL file
-  sjsonl diff <base.jsonl> <target.jsonl> - Create a patch between two JSONL files
+  sjsonl diff [--unsigned] <base.jsonl> <target.jsonl> - Create a patch between two JSONL files
   sjsonl patch <base.jsonl> <patch.jsonl> - Apply a patch to a base JSONL file
 
 Commands:
   keygen   Generates a new Ed25519 private key (hex encoded)
   sign     Signs the input JSONL file with a private key from file or env var
   verify   Verifies a signed JSONL file and displays information about it
-  diff     Creates a patch document representing differences between two files
+  diff     Creates a patch document representing differences between two files.
+           --unsigned omits the target's key and signature from the patch
   patch    Applies a patch document to a base document
 
 Examples:
@@ -77,6 +78,7 @@ Examples:
   sjsonl sign data.jsonl > signed.jsonl  # Uses SJSONL_PRIVATE_KEY env var
   sjsonl verify signed.jsonl
   sjsonl diff base.jsonl target.jsonl > patch.jsonl
+  sjsonl diff --unsigned base.jsonl target.jsonl > patch.jsonl
   sjsonl patch base.jsonl patch.jsonl > result.jsonl
 `)
 }
@@ -192,13 +194,23 @@ func handleVerify() {
 }
 
 func handleDiff() {
-	if len(os.Args) < 4 {
-		fmt.Fprintf(os.Stderr, "Usage: sjsonl diff <base.jsonl> <target.jsonl>\n")
+	var unsigned bool
+	var args []string
+	for _, arg := range os.Args[2:] {
+		if arg == "--unsigned" || arg == "-unsigned" {
+			unsigned = true
+			continue
+		}
+		args = append(args, arg)
+	}
+
+	if len(args) != 2 {
+		fmt.Fprintf(os.Stderr, "Usage: sjsonl diff [--unsigned] <base.jsonl> <target.jsonl>\n")
 		os.Exit(1)
 	}
 
-	baseFile := os.Args[2]
-	targetFile := os.Args[3]
+	baseFile := args[0]
+	targetFile := args[1]
 
 	baseData, err := os.ReadFile(baseFile)
 	if err != nil {
@@ -212,7 +224,12 @@ func handleDiff() {
 		os.Exit(1)
 	}
 
-	patch, err := sjsonl.Diff(baseData, targetData)
+	diff := sjsonl.Diff
+	if unsigned {
+		diff = sjsonl.DiffUnsigned
+	}
+
+	patch, err := diff(baseData, targetData)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating diff: %v\n", err)
 		os.Exit(1)
@@ -258,7 +275,11 @@ func handlePatch() {
 	// Print info to stderr
 	fmt.Fprintf(os.Stderr, "Patch applied successfully\n")
 	fmt.Fprintf(os.Stderr, "Result Hash: %s\n", info.Hash)
-	fmt.Fprintf(os.Stderr, "Signer ID: %s\n", info.SignerID)
+	if info.SignerKey == nil {
+		fmt.Fprintf(os.Stderr, "Unsigned patch: result is plain JSONL with no signature\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "Signer ID: %s\n", info.SignerID)
+	}
 }
 
 func readPrivateKeyFromFile(filename string) (ed25519.PrivateKey, error) {

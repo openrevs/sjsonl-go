@@ -20,6 +20,9 @@ const (
 	sign int = iota + 1
 	parse
 	patch
+	// unsigned marks a document produced by applying an unsigned patch. It
+	// has no header line and is serialized as plain JSONL.
+	unsigned
 )
 
 const (
@@ -61,6 +64,17 @@ func Verify(data []byte) (Info, error) {
 
 // Diff creates a patch document representing the difference between base and target.
 func Diff(base, target []byte) ([]byte, error) {
+	return diff(base, target, true)
+}
+
+// DiffUnsigned is like Diff, but the resulting patch omits the target's key
+// and signature. Unsigned patches are intended for internal and trusted
+// environments, such as compactly storing old versions of a document.
+func DiffUnsigned(base, target []byte) ([]byte, error) {
+	return diff(base, target, false)
+}
+
+func diff(base, target []byte, signed bool) ([]byte, error) {
 	baseJsonl, err := Parse(base)
 	if err != nil {
 		return nil, err
@@ -76,10 +90,20 @@ func Diff(base, target []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	if !signed {
+		patch.ctl.publicKey = nil
+		patch.ctl.signature = nil
+	}
+
 	return patch.JSON(), nil
 }
 
 // Patch applies a patch document to a base document and returns the result.
+//
+// If the patch is signed, the result is a signed document whose signature has
+// been verified. If the patch is unsigned, the result is plain JSONL (no
+// header line); its integrity is established by the patch's target hash, and
+// the returned Info has no signer.
 func Patch(base, patch []byte) ([]byte, Info, error) {
 	baseJsonl, err := Parse(base)
 	if err != nil {
@@ -129,8 +153,8 @@ func (ctl controlLine) JSON() string {
 	controlLineJSON := struct {
 		SJSONL  string    `json:"sjsonl"`
 		Version string    `json:"version"`
-		Key     string    `json:"key"`
-		Sig     string    `json:"sig"`
+		Key     string    `json:"key,omitempty"`
+		Sig     string    `json:"sig,omitempty"`
 		Base    string    `json:"base,omitempty"`
 		Target  string    `json:"target,omitempty"`
 		Rm      *[]string `json:"rm,omitempty"`
@@ -175,6 +199,9 @@ var (
 	ErrMissingSignature      = errors.New("missing signature")
 	ErrControlLineNotFound   = errors.New("control line not found")
 	ErrRmFormatError         = errors.New("bad rm format")
+	ErrBadDocHashFormat      = errors.New("bad document hash format")
+	ErrBaseMismatch          = errors.New("patch base does not match document")
+	ErrTargetMismatch        = errors.New("patch target does not match patched document")
 )
 
 // New creates a new JSONL instance from the given data and private key.
@@ -225,8 +252,10 @@ func split(data []byte) ([][]byte, error) {
 func (jsonl *JSONL) JSON() []byte {
 	var buf bytes.Buffer
 
-	buf.WriteString(jsonl.ctl.JSON())
-	buf.WriteByte('\n')
+	if jsonl.ctl.ctlType != unsigned {
+		buf.WriteString(jsonl.ctl.JSON())
+		buf.WriteByte('\n')
+	}
 
 	for _, line := range jsonl.lines {
 		buf.Write(line.line)
@@ -327,29 +356,37 @@ func parseControlLine(line []byte) (*controlLine, error) {
 		return nil, fmt.Errorf("unknown sjsonl type %q", ctlType)
 	}
 
-	// Validate public key format and length
-	pubKeyStr := result.Get(jsonKey).String()
-	pubKeyBytes, err := decodeHex(pubKeyStr)
-	if err != nil {
-		return nil, ErrBadKeyFormat
-	}
-	if len(pubKeyBytes) != ed25519.PublicKeySize {
-		return nil, ErrBadKeyFormat
-	}
+	ctl := &controlLine{}
 
-	// Validate signature format and length
-	sigStr := result.Get(jsonSig).String()
-	sigBytes, err := decodeHex(sigStr)
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid signature decoding: %w", ErrBadSigFormat, err)
-	}
-	if len(sigBytes) != ed25519.SignatureSize {
-		return nil, fmt.Errorf("%w: invalid signature size: %d", ErrBadSigFormat, len(sigBytes))
-	}
+	// Documents must be signed. Patches may omit key and sig together, but
+	// not just one of them.
+	keyRaw, sigRaw := result.Get(jsonKey), result.Get(jsonSig)
+	signed := ctlType == "doc" || keyRaw.Exists() || sigRaw.Exists()
 
-	ctl := &controlLine{
-		publicKey: pubKeyBytes,
-		signature: sigBytes,
+	if signed {
+		// Validate public key format and length
+		pubKeyBytes, err := decodeHex(keyRaw.String())
+		if err != nil || keyRaw.Type != gjson.String {
+			return nil, ErrBadKeyFormat
+		}
+		if len(pubKeyBytes) != ed25519.PublicKeySize {
+			return nil, ErrBadKeyFormat
+		}
+
+		// Validate signature format and length
+		sigBytes, err := decodeHex(sigRaw.String())
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid signature decoding: %w", ErrBadSigFormat, err)
+		}
+		if sigRaw.Type != gjson.String {
+			return nil, fmt.Errorf("%w: signature must be a string", ErrBadSigFormat)
+		}
+		if len(sigBytes) != ed25519.SignatureSize {
+			return nil, fmt.Errorf("%w: invalid signature size: %d", ErrBadSigFormat, len(sigBytes))
+		}
+
+		ctl.publicKey = pubKeyBytes
+		ctl.signature = sigBytes
 	}
 
 	if ctlType == "doc" {
@@ -358,20 +395,18 @@ func parseControlLine(line []byte) (*controlLine, error) {
 		return ctl, nil
 	}
 
+	var err error
+
 	// Parse additional data for Patches
 	ctl.ctlType = patch
 
-	base := result.Get(jsonBase)
-	if !base.Exists() {
-		return nil, errors.New("missing 'base'")
+	if ctl.base, err = parseDocHash(result, jsonBase); err != nil {
+		return nil, err
 	}
-	ctl.base = base.String()
 
-	target := result.Get(jsonTarget)
-	if !target.Exists() {
-		return nil, errors.New("missing 'target'")
+	if ctl.target, err = parseDocHash(result, jsonTarget); err != nil {
+		return nil, err
 	}
-	ctl.target = target.String()
 
 	rmRaw := result.Get(jsonRm)
 	if !rmRaw.Exists() {
@@ -389,16 +424,17 @@ func parseControlLine(line []byte) (*controlLine, error) {
 }
 
 func newInfo(jsonl *JSONL) Info {
-	hash := hashDocument(jsonl.lines)
-	signerKey := jsonl.ctl.publicKey
-	idRaw := sha256.Sum256(signerKey)
-	signerID := hex.EncodeToString(idRaw[:])
-
-	return Info{
-		Hash:      hash,
-		SignerID:  signerID,
-		SignerKey: signerKey,
+	info := Info{
+		Hash: hashDocument(jsonl.lines),
 	}
+
+	if signerKey := jsonl.ctl.publicKey; signerKey != nil {
+		idRaw := sha256.Sum256(signerKey)
+		info.SignerID = hex.EncodeToString(idRaw[:])
+		info.SignerKey = signerKey
+	}
+
+	return info
 }
 
 // cleanAndValidate strips whitespace and validates a JSON line.
@@ -437,7 +473,24 @@ func signLines(lines []hashedLine, privateKey ed25519.PrivateKey) []byte {
 func hashDocument(lines []hashedLine) string {
 	msg := concatLineHashes(lines)
 	h := sha256.Sum256(msg)
-	return hex.EncodeToString(h[:sha256.Size/2])
+	return hex.EncodeToString(h[:])
+}
+
+// parseDocHash extracts a required document hash field. Document hashes are
+// full SHA256 values encoded as lowercase hex.
+func parseDocHash(result gjson.Result, field string) (string, error) {
+	v := result.Get(field)
+	if !v.Exists() {
+		return "", fmt.Errorf("%w: missing '%s'", ErrBadDocHashFormat, field)
+	}
+	if v.Type != gjson.String {
+		return "", fmt.Errorf("%w: '%s' must be a string", ErrBadDocHashFormat, field)
+	}
+	s := v.String()
+	if len(s) != hex.EncodedLen(sha256.Size) || !isLowerHex(s) {
+		return "", fmt.Errorf("%w: '%s' must be %d lowercase hex characters", ErrBadDocHashFormat, field, hex.EncodedLen(sha256.Size))
+	}
+	return s, nil
 }
 
 func parseRm(result gjson.Result) ([]string, error) {

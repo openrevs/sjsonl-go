@@ -3,6 +3,8 @@ package sjsonl
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"slices"
@@ -202,11 +204,11 @@ func TestPatchAddsDuplicate(t *testing.T) {
 	require.NoError(err)
 
 	// A hand-crafted patch that deletes nothing and adds a line already in
-	// the base. The key/sig only need to be well-formed; Patch does not
-	// verify them.
-	patchData := fmt.Sprintf(`{"sjsonl":"patch","version":"0.1","key":"%s","sig":"%s","base":"abcd","target":"beef","rm":[]}
+	// the base. The key/sig only need to be well-formed: the duplicate is
+	// detected before the target hash or signature is checked.
+	patchData := fmt.Sprintf(`{"sjsonl":"patch","version":"0.1","key":"%s","sig":"%s","base":"%s","target":"%s","rm":[]}
 {"a":1}
-`, strings.Repeat("6b", 32), strings.Repeat("73", 64))
+`, strings.Repeat("6b", 32), strings.Repeat("73", 64), src.hash(), strings.Repeat("7a", 32))
 
 	p, err := ParsePatch([]byte(patchData))
 	require.NoError(err)
@@ -269,4 +271,151 @@ func TestPatch(t *testing.T) {
 
 	// require.NoError(os.WriteFile("/tmp/diff.json", out, 0644))
 
+}
+
+func TestDocumentHashIsFullSHA256(t *testing.T) {
+	require := require.New(t)
+
+	doc, err := New([]byte(`{"a":1}
+{"b":2}`), testKey())
+	require.NoError(err)
+
+	msg := concatLineHashes(doc.lines)
+	want := sha256.Sum256(msg)
+	require.Equal(hex.EncodeToString(want[:]), doc.hash())
+	require.Equal(doc.hash(), doc.Info().Hash)
+	require.Len(doc.hash(), 64)
+}
+
+// patchFixture returns a base document, a target document, and a parsed
+// patch between them.
+func patchFixture(t *testing.T) (*JSONL, *JSONL, *JSONL) {
+	t.Helper()
+	require := require.New(t)
+
+	src, err := New([]byte(`{"a":1}
+{"b":2}`), testKey())
+	require.NoError(err)
+
+	tgt, err := New([]byte(`{"a":1}
+{"c":3}`), testKey())
+	require.NoError(err)
+
+	p, err := src.Diff(tgt)
+	require.NoError(err)
+
+	p, err = ParsePatch(p.JSON())
+	require.NoError(err)
+
+	return src, tgt, p
+}
+
+func TestPatchVerifiesBaseAndTarget(t *testing.T) {
+	t.Run("matching base and target", func(t *testing.T) {
+		src, tgt, p := patchFixture(t)
+		require.Len(t, p.ctl.base, 64)
+		require.Len(t, p.ctl.target, 64)
+
+		out, err := src.Patch(p)
+		require.NoError(t, err)
+		require.Equal(t, tgt.hash(), out.Info().Hash)
+		require.Equal(t, tgt.JSON(), out.JSON())
+	})
+
+	t.Run("base mismatch", func(t *testing.T) {
+		_, tgt, p := patchFixture(t)
+
+		// Applying the patch to the target rather than the base must fail.
+		_, err := tgt.Patch(p)
+		require.ErrorIs(t, err, ErrBaseMismatch)
+	})
+
+	t.Run("target mismatch", func(t *testing.T) {
+		src, _, p := patchFixture(t)
+		p.ctl.target = strings.Repeat("7a", 32)
+
+		_, err := src.Patch(p)
+		require.ErrorIs(t, err, ErrTargetMismatch)
+	})
+
+	t.Run("target mismatch via public API", func(t *testing.T) {
+		src, tgt, p := patchFixture(t)
+		data := strings.Replace(string(p.JSON()), tgt.hash(), strings.Repeat("7a", 32), 1)
+
+		_, _, err := Patch(src.JSON(), []byte(data))
+		require.ErrorIs(t, err, ErrTargetMismatch)
+	})
+
+	t.Run("truncated target rejected", func(t *testing.T) {
+		src, tgt, p := patchFixture(t)
+		data := strings.Replace(string(p.JSON()), tgt.hash(), tgt.hash()[:32], 1)
+
+		_, _, err := Patch(src.JSON(), []byte(data))
+		require.ErrorIs(t, err, ErrBadDocHashFormat)
+	})
+
+	t.Run("missing target rejected", func(t *testing.T) {
+		src, tgt, p := patchFixture(t)
+		data := strings.Replace(string(p.JSON()), `,"target":"`+tgt.hash()+`"`, "", 1)
+		require.NotEqual(t, string(p.JSON()), data)
+
+		_, _, err := Patch(src.JSON(), []byte(data))
+		require.ErrorIs(t, err, ErrBadDocHashFormat)
+	})
+}
+
+func TestPatchVerifiesSignature(t *testing.T) {
+	require := require.New(t)
+	src, tgt, p := patchFixture(t)
+
+	// Swap in a signature from a different key over the same target line set.
+	// The target hash still matches, so only signature verification catches it.
+	other, err := New([]byte(`{"a":1}
+{"c":3}`), func() ed25519.PrivateKey {
+		_, k, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(err)
+		return k
+	}())
+	require.NoError(err)
+	require.Equal(tgt.hash(), other.hash())
+
+	p.ctl.signature = other.ctl.signature
+	_, err = src.Patch(p)
+	require.ErrorIs(err, ErrSigVerificationFailed)
+
+	// A corrupted signature is rejected through the public API too.
+	_, tgt2, p2 := patchFixture(t)
+	good := hex.EncodeToString(tgt2.ctl.signature)
+	bad := strings.Repeat("0", len(good))
+	data := strings.Replace(string(p2.JSON()), good, bad, 1)
+	require.NotEqual(string(p2.JSON()), data)
+
+	_, _, err = Patch(src.JSON(), []byte(data))
+	require.ErrorIs(err, ErrSigVerificationFailed)
+}
+
+func TestUnsignedPatch(t *testing.T) {
+	require := require.New(t)
+	src, tgt, _ := patchFixture(t)
+
+	data, err := DiffUnsigned(src.JSON(), tgt.JSON())
+	require.NoError(err)
+	header := strings.SplitN(string(data), "\n", 2)[0]
+	require.NotContains(header, `"key"`)
+	require.NotContains(header, `"sig"`)
+	require.Contains(header, `"target":"`+tgt.hash()+`"`)
+
+	result, info, err := Patch(src.JSON(), data)
+	require.NoError(err)
+
+	// The result is the target's line set as plain JSONL, with no header.
+	require.Equal(tgt.hash(), info.Hash)
+	require.Empty(info.SignerID)
+	require.Nil(info.SignerKey)
+	require.Equal("{\"a\":1}\n{\"c\":3}\n", string(result))
+
+	// Without a signature, the target hash is what guards the result.
+	tampered := strings.Replace(string(data), tgt.hash(), strings.Repeat("7a", 32), 1)
+	_, _, err = Patch(src.JSON(), []byte(tampered))
+	require.ErrorIs(err, ErrTargetMismatch)
 }

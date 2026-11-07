@@ -27,6 +27,8 @@ func TestValid(t *testing.T) {
 func TestParseControlLine(t *testing.T) {
 	fakeKey := strings.Repeat("6b", 32)
 	fakeSig := strings.Repeat("73", 64)
+	fakeBase := strings.Repeat("ba", 32)
+	fakeTarget := strings.Repeat("7a", 32)
 
 	tests := []struct {
 		name      string
@@ -91,8 +93,43 @@ func TestParseControlLine(t *testing.T) {
 			ctlType:   sign,
 		},
 		{
-			name:      "non-signature control line",
+			name:      "bare patch control line",
 			input:     []byte(`{"sjsonl": "patch"}`),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "doc missing key and sig",
+			input:     []byte(`{"sjsonl": "doc"}`),
+			expectErr: true,
+			errType:   ErrBadKeyFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "doc missing sig",
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s"}`, fakeKey),
+			expectErr: true,
+			errType:   ErrBadSigFormat,
+			ctlType:   sign,
+		},
+		{
+			name:      "patch with key but no sig",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "base": "%s", "target": "%s", "rm": []}`, fakeKey, fakeBase, fakeTarget),
+			expectErr: true,
+			errType:   ErrBadSigFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch with sig but no key",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "sig": "%s", "base": "%s", "target": "%s", "rm": []}`, fakeSig, fakeBase, fakeTarget),
+			expectErr: true,
+			errType:   ErrBadKeyFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch with non-string key",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": null, "sig": "%s", "base": "%s", "target": "%s", "rm": []}`, fakeSig, fakeBase, fakeTarget),
 			expectErr: true,
 			errType:   ErrBadKeyFormat,
 			ctlType:   patch,
@@ -113,14 +150,64 @@ func TestParseControlLine(t *testing.T) {
 		},
 		{
 			name:      "valid patch control line",
-			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "abc", "target": "def", "rm": ["abc"]}`, fakeKey, fakeSig),
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase, fakeTarget),
 			expectErr: false,
 			ctlType:   patch,
 		},
 		{
 			name:      "patch control line missing target",
-			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "abc", "rm": ["abc"]}`, fakeKey, fakeSig),
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase),
 			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch control line missing base",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "target": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeTarget),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch control line empty target",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": "", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch control line truncated (16-byte) target",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase, fakeTarget[:32]),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch control line truncated (16-byte) base",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase[:32], fakeTarget),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch control line overlong target",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": "%s00", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase, fakeTarget),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch control line uppercase target",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase, strings.ToUpper(fakeTarget)),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
+			ctlType:   patch,
+		},
+		{
+			name:      "patch control line non-string target",
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": null, "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase),
+			expectErr: true,
+			errType:   ErrBadDocHashFormat,
 			ctlType:   patch,
 		},
 	}
@@ -588,4 +675,23 @@ func testKey() ed25519.PrivateKey {
 	}
 
 	return privateKey
+}
+
+func TestParseUnsignedPatchControlLine(t *testing.T) {
+	base := strings.Repeat("ba", 32)
+	target := strings.Repeat("7a", 32)
+
+	ctl, err := parseControlLine(fmt.Appendf(nil, `{"sjsonl": "patch", "version": "0.1", "base": "%s", "target": "%s", "rm": ["ab"]}`, base, target))
+	require.NoError(t, err)
+	require.Equal(t, patch, ctl.ctlType)
+	require.Nil(t, ctl.publicKey)
+	require.Nil(t, ctl.signature)
+	require.Equal(t, base, ctl.base)
+	require.Equal(t, target, ctl.target)
+	require.Equal(t, []string{"ab"}, ctl.rm)
+
+	// Re-serializing omits key and sig rather than emitting empty strings.
+	out := ctl.JSON()
+	require.NotContains(t, out, `"key"`)
+	require.NotContains(t, out, `"sig"`)
 }
