@@ -22,7 +22,7 @@ The `sign` command resolves its key in order: `-k keyfile` flag, then the `SJSON
 ## Library
 
 ```go
-import sjsonl "github.com/kalafut/sjsonl"
+import sjsonl "github.com/openrevs/sjsonl-go"
 
 signed, info, err := sjsonl.Sign(data, privateKey)
 info, err := sjsonl.Verify(signed)

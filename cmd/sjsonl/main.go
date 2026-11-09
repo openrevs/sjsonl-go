@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kalafut/sjsonl"
+	"github.com/openrevs/sjsonl-go"
 )
 
 func main() {

@@ -24,7 +24,7 @@ go build -o cmd/sjsonl/sjsonl ./cmd/sjsonl
 
 ## Project Structure
 
-A single Go module (`github.com/kalafut/sjsonl`):
+A single Go module (`github.com/openrevs/sjsonl-go`):
 
 - **Root package** — the library
 - **`cmd/sjsonl/`** — CLI tool (`go run ./cmd/sjsonl`)

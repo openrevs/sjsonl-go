@@ -1,4 +1,4 @@
-module github.com/kalafut/sjsonl
+module github.com/openrevs/sjsonl-go
 
 go 1.24.5
 
