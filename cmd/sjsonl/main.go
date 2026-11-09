@@ -99,8 +99,8 @@ func handleKeygen() {
 		os.Exit(1)
 	}
 
-	// Encode private key as base64
-	encoded := base64.StdEncoding.EncodeToString(privateKey)
+	// Store the 32-byte seed (the RFC 8032 private key), base64 encoded.
+	encoded := base64.StdEncoding.EncodeToString(privateKey.Seed())
 
 	err = os.WriteFile(filename, []byte(encoded), 0600)
 	if err != nil {
@@ -289,17 +289,7 @@ func readPrivateKeyFromFile(filename string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 
-	// Decode base64
-	privateKey, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(string(data)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode private key: %v", err)
-	}
-
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("invalid private key size: expected %d, got %d", ed25519.PrivateKeySize, len(privateKey))
-	}
-
-	return ed25519.PrivateKey(privateKey), nil
+	return parsePrivateKey(string(data))
 }
 
 func readPrivateKeyFromEnv() (ed25519.PrivateKey, error) {
@@ -308,15 +298,22 @@ func readPrivateKeyFromEnv() (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("SJSONL_PRIVATE_KEY environment variable not set")
 	}
 
-	// Decode base64
-	privateKey, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(keyStr))
+	privateKey, err := parsePrivateKey(keyStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode private key from environment: %v", err)
+		return nil, fmt.Errorf("SJSONL_PRIVATE_KEY: %w", err)
 	}
+	return privateKey, nil
+}
 
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("invalid private key size from environment: expected %d, got %d", ed25519.PrivateKeySize, len(privateKey))
+// parsePrivateKey decodes a base64 private key: the 32-byte Ed25519
+// seed (the RFC 8032 private key).
+func parsePrivateKey(s string) (ed25519.PrivateKey, error) {
+	raw, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(s))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode private key: %w", err)
 	}
-
-	return ed25519.PrivateKey(privateKey), nil
+	if len(raw) != ed25519.SeedSize {
+		return nil, fmt.Errorf("invalid private key size: expected %d-byte seed, got %d bytes", ed25519.SeedSize, len(raw))
+	}
+	return ed25519.NewKeyFromSeed(raw), nil
 }

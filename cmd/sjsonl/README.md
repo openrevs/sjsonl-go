@@ -17,7 +17,7 @@ sjsonl <command> [arguments]
 ### Commands
 
 #### keygen
-Generates a new Ed25519 private key encoded as standard base64.
+Generates a new Ed25519 private key (the 32-byte seed) encoded as standard base64.
 
 ```bash
 sjsonl keygen [filename]
@@ -130,7 +130,7 @@ Here's a complete workflow demonstrating all operations:
 ## Key Management
 
 ### Private Key Format
-Private keys are stored as standard base64 strings (RFC 4648, with padding). This format is:
+Private keys are the 32-byte Ed25519 seed (the private key as defined in RFC 8032), stored as standard base64 strings (RFC 4648, with padding), 44 characters long. This format is:
 - Consistent with how public keys and signatures are encoded in the SJSONL format
 - Compact
 - Safe for environment variables and command-line usage
