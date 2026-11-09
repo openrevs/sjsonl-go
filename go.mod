@@ -1,6 +1,6 @@
 module github.com/openrevs/sjsonl-go
 
-go 1.24.5
+go 1.22
 
 require (
 	github.com/samber/lo v1.51.0
