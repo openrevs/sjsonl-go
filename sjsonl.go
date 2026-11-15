@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 )
@@ -190,6 +191,9 @@ type hashedLine struct {
 }
 
 var (
+	ErrInvalidUTF8           = errors.New("not valid UTF-8")
+	ErrDuplicateHeaderKey    = errors.New("duplicate key in header line")
+	ErrUnsupportedVersion    = errors.New("unsupported version")
 	ErrEmptyLine             = errors.New("empty JSON line")
 	ErrInvalidJSON           = errors.New("not a valid JSON object")
 	ErrMultiLine             = errors.New("JSON must be single line")
@@ -239,13 +243,10 @@ func ParsePatch(data []byte) (*JSONL, error) {
 func split(data []byte) ([][]byte, error) {
 	lines := bytes.Split(data, []byte("\n"))
 
-	// Allow and strip a single trailing newline (which here results in an empty line), per JSONL definition
+	// Allow and strip a single trailing newline (which here results in an
+	// empty line), per JSONL definition. Empty input yields no lines.
 	if len(lines[len(lines)-1]) == 0 {
 		lines = lines[:len(lines)-1]
-	}
-
-	if len(lines) == 0 {
-		return nil, errors.New("empty JSONL")
 	}
 
 	return lines, nil
@@ -280,6 +281,9 @@ func linesParseCore(lines [][]byte, privateKey ed25519.PrivateKey, mode int) (*J
 	var ctl *controlLine
 	lineOffset := 1 // report 1-based file line numbers
 	if mode != sign {
+		if len(lines) == 0 {
+			return nil, ErrControlLineNotFound
+		}
 		var err error
 		ctl, err = parseControlLine(lines[0])
 		if err != nil {
@@ -347,11 +351,34 @@ func linesParseCore(lines [][]byte, privateKey ed25519.PrivateKey, mode int) (*J
 }
 
 func parseControlLine(line []byte) (*controlLine, error) {
+	if !utf8.Valid(line) {
+		return nil, ErrInvalidUTF8
+	}
 	if !gjson.ValidBytes(line) {
 		return nil, ErrInvalidJSON
 	}
 
 	result := gjson.ParseBytes(line)
+	if !result.IsObject() {
+		return nil, fmt.Errorf("%w: header line must be a JSON object", ErrInvalidJSON)
+	}
+
+	// JSON parsers disagree on which value wins for a repeated key, so a
+	// header with one could be read differently by different implementations.
+	seen := map[string]bool{}
+	var dup string
+	result.ForEach(func(key, _ gjson.Result) bool {
+		k := key.String()
+		if seen[k] {
+			dup = k
+			return false
+		}
+		seen[k] = true
+		return true
+	})
+	if dup != "" {
+		return nil, fmt.Errorf("%w: %q", ErrDuplicateHeaderKey, dup)
+	}
 	ctlType := result.Get(jsonSJSONL).String()
 
 	if ctlType != "doc" && ctlType != "patch" {
@@ -394,7 +421,7 @@ func parseControlLine(line []byte) (*controlLine, error) {
 	if ctlType == "doc" {
 		ctl.ctlType = sign
 
-		return ctl, nil
+		return ctl, checkVersion(result)
 	}
 
 	var err error
@@ -422,7 +449,20 @@ func parseControlLine(line []byte) (*controlLine, error) {
 
 	ctl.rm = deletions
 
-	return ctl, nil
+	return ctl, checkVersion(result)
+}
+
+// checkVersion requires the header's version to be one this implementation
+// supports.
+func checkVersion(result gjson.Result) error {
+	v := result.Get(jsonVersion)
+	if !v.Exists() {
+		return fmt.Errorf("%w: missing '%s'", ErrUnsupportedVersion, jsonVersion)
+	}
+	if v.Type != gjson.String || v.String() != formatVersion {
+		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, v.Raw)
+	}
+	return nil
 }
 
 func newInfo(jsonl *JSONL) Info {
@@ -439,9 +479,13 @@ func newInfo(jsonl *JSONL) Info {
 	return info
 }
 
+// jsonWhitespace is the whitespace defined by RFC 8259. Only these characters
+// are stripped from lines; other Unicode whitespace is significant.
+const jsonWhitespace = " \t\r\n"
+
 // cleanAndValidate strips whitespace and validates a JSON line.
 func cleanAndValidate(line []byte) ([]byte, error) {
-	line = bytes.TrimSpace(line)
+	line = bytes.Trim(line, jsonWhitespace)
 
 	if len(line) == 0 {
 		return nil, ErrEmptyLine
@@ -452,7 +496,10 @@ func cleanAndValidate(line []byte) ([]byte, error) {
 		return nil, ErrMultiLine
 	}
 
-	// TODO: necessary?
+	if !utf8.Valid(line) {
+		return nil, ErrInvalidUTF8
+	}
+
 	if !gjson.ValidBytes(line) {
 		return nil, ErrInvalidJSON
 	}
