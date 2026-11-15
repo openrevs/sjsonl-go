@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -419,4 +421,116 @@ func TestUnsignedPatch(t *testing.T) {
 	tampered := strings.Replace(string(data), tgt.hash(), strings.Repeat("7a", 32), 1)
 	_, _, err = Patch(src.JSON(), []byte(tampered))
 	require.ErrorIs(err, ErrTargetMismatch)
+}
+
+// craftPatch builds an unsigned patch against src with the given rm prefixes,
+// added lines, and target document.
+func craftPatch(t *testing.T, src *JSONL, rm []string, add string, target *JSONL) *JSONL {
+	t.Helper()
+
+	rmJSON, err := json.Marshal(rm)
+	require.NoError(t, err)
+
+	data := fmt.Sprintf(`{"sjsonl":"patch","version":"0.1","base":"%s","target":"%s","rm":%s}`+"\n%s",
+		src.hash(), target.hash(), rmJSON, add)
+	p, err := ParsePatch([]byte(data))
+	require.NoError(t, err)
+	return p
+}
+
+func TestPatchRmPrefixes(t *testing.T) {
+	src, err := New([]byte(`{"a":1}
+{"b":2}
+{"c":3}
+{"d":4}`), testKey())
+	require.NoError(t, err)
+
+	hashes := lo.Map(src.lines, func(l hashedLine, _ int) string { return l.hash })
+
+	t.Run("unmatched prefix", func(t *testing.T) {
+		// Find a single-character prefix no line hash starts with.
+		var prefix string
+		for _, c := range "0123456789abcdef" {
+			if !lo.SomeBy(hashes, func(h string) bool { return h[0] == byte(c) }) {
+				prefix = string(c)
+				break
+			}
+		}
+		require.NotEmpty(t, prefix)
+
+		data := fmt.Sprintf(`{"sjsonl":"patch","version":"0.1","base":"%s","target":"%s","rm":["%s"]}`+"\n",
+			src.hash(), strings.Repeat("0", 64), prefix)
+		p, err := ParsePatch([]byte(data))
+		require.NoError(t, err)
+
+		_, err = src.Patch(p)
+		require.ErrorIs(t, err, ErrUnmatchedPrefix)
+	})
+
+	t.Run("empty prefix replaces everything", func(t *testing.T) {
+		tgt, err := New([]byte(`{"z":26}`), testKey())
+		require.NoError(t, err)
+
+		p := craftPatch(t, src, []string{""}, `{"z":26}`+"\n", tgt)
+		out, err := src.Patch(p)
+		require.NoError(t, err)
+		require.Len(t, out.lines, 1)
+		require.Equal(t, `{"z":26}`, string(out.lines[0].line))
+	})
+
+	t.Run("prefix matching multiple lines", func(t *testing.T) {
+		// The common prefix of the first two sorted hashes matches at least
+		// those two lines.
+		prefix := hashes[0][:commonPrefixLen(hashes[0], hashes[1])]
+		var kept []string
+		for _, l := range src.lines {
+			if !strings.HasPrefix(l.hash, prefix) {
+				kept = append(kept, string(l.line))
+			}
+		}
+		require.Less(t, len(kept), len(src.lines)-1)
+		tgt, err := New([]byte(strings.Join(kept, "\n")), testKey())
+		require.NoError(t, err)
+
+		p := craftPatch(t, src, []string{prefix}, "", tgt)
+		out, err := src.Patch(p)
+		require.NoError(t, err)
+		require.Equal(t, tgt.hash(), out.hash())
+	})
+
+	t.Run("remove and re-add same line", func(t *testing.T) {
+		p := craftPatch(t, src, []string{hashes[0]}, string(src.lines[0].line)+"\n", src)
+		out, err := src.Patch(p)
+		require.NoError(t, err)
+		require.Equal(t, src.hash(), out.hash())
+	})
+}
+
+func BenchmarkPatch(b *testing.B) {
+	var base, tgt strings.Builder
+	for i := range 10000 {
+		fmt.Fprintf(&base, `{"n":%d}`+"\n", i)
+		if i%10 != 0 {
+			fmt.Fprintf(&tgt, `{"n":%d}`+"\n", i)
+		}
+	}
+	for i := range 1000 {
+		fmt.Fprintf(&tgt, `{"new":%d}`+"\n", i)
+	}
+
+	src, err := New([]byte(base.String()), testKey())
+	require.NoError(b, err)
+	dst, err := New([]byte(tgt.String()), testKey())
+	require.NoError(b, err)
+	p, err := src.Diff(dst)
+	require.NoError(b, err)
+	p, err = ParsePatch(p.JSON())
+	require.NoError(b, err)
+
+	b.ResetTimer()
+	for range b.N {
+		if _, err := src.Patch(p); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

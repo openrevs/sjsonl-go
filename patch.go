@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"log/slog"
-	"slices"
 	"sort"
 	"strings"
 
@@ -17,34 +16,54 @@ func (src *JSONL) Patch(patch *JSONL) (*JSONL, error) {
 		return nil, fmt.Errorf("%w: base %s, document %s", ErrBaseMismatch, patch.ctl.base, srcHash)
 	}
 
-	// Remove lines from src
-	newLineSet := make([]hashedLine, 0, len(src.lines))
-
-outer:
-	for _, line := range src.lines {
-		for _, prefix := range patch.ctl.rm {
-			if strings.HasPrefix(line.hash, prefix) {
-				continue outer
-			}
+	// src.lines is sorted by hash, so each rm prefix matches a contiguous
+	// range of lines that can be located by binary search.
+	remove := make([]bool, len(src.lines))
+	for _, prefix := range patch.ctl.rm {
+		start := sort.Search(len(src.lines), func(i int) bool {
+			return src.lines[i].hash >= prefix
+		})
+		end := start
+		for end < len(src.lines) && strings.HasPrefix(src.lines[end].hash, prefix) {
+			remove[end] = true
+			end++
 		}
-		newLineSet = append(newLineSet, line)
+		if start == end {
+			return nil, fmt.Errorf("%w: %q", ErrUnmatchedPrefix, prefix)
+		}
 	}
 
-	// Add new lines
-	for _, line := range patch.lines {
-		newLineSet = append(newLineSet, line)
-	}
-
-	slices.SortFunc(newLineSet, func(a, b hashedLine) int {
-		return strings.Compare(a.hash, b.hash)
-	})
-
-	// A patch may not add a line already present in the base (duplicates
-	// within the patch itself are caught when the patch is parsed).
-	for i := 1; i < len(newLineSet); i++ {
-		if newLineSet[i].hash == newLineSet[i-1].hash {
-			return nil, fmt.Errorf("patch adds line already in base: %w: %s",
-				ErrDuplicateLine, snippet(newLineSet[i].line))
+	// Merge the kept base lines with the patch's added lines. Both are sorted
+	// by hash, so a single linear pass yields a sorted result.
+	newLineSet := make([]hashedLine, 0, len(src.lines)+len(patch.lines))
+	i, j := 0, 0
+	for i < len(src.lines) || j < len(patch.lines) {
+		if i < len(src.lines) && remove[i] {
+			i++
+			continue
+		}
+		switch {
+		case j == len(patch.lines):
+			newLineSet = append(newLineSet, src.lines[i])
+			i++
+		case i == len(src.lines):
+			newLineSet = append(newLineSet, patch.lines[j])
+			j++
+		default:
+			// A patch may not add a line already present in the base
+			// (duplicates within the patch itself are caught when the patch
+			// is parsed).
+			switch c := strings.Compare(src.lines[i].hash, patch.lines[j].hash); {
+			case c < 0:
+				newLineSet = append(newLineSet, src.lines[i])
+				i++
+			case c > 0:
+				newLineSet = append(newLineSet, patch.lines[j])
+				j++
+			default:
+				return nil, fmt.Errorf("patch adds line already in base: %w: %s",
+					ErrDuplicateLine, snippet(patch.lines[j].line))
+			}
 		}
 	}
 
