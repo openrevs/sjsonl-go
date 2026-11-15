@@ -203,6 +203,7 @@ var (
 	ErrBadDocHashFormat      = errors.New("bad document hash format")
 	ErrBaseMismatch          = errors.New("patch base does not match document")
 	ErrTargetMismatch        = errors.New("patch target does not match patched document")
+	ErrUnmatchedPrefix       = errors.New("rm prefix matches no line")
 )
 
 // New creates a new JSONL instance from the given data and private key.
