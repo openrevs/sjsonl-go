@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -130,7 +132,7 @@ func TestParseControlLine(t *testing.T) {
 		},
 		{
 			name:      "valid signature format",
-			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, fakeKey, fakeSig),
+			input:     fmt.Appendf(nil, `{"sjsonl": "doc", "version": "0.1", "key": "%s", "sig": "%s"}`, fakeKey, fakeSig),
 			expectErr: false,
 			ctlType:   sign,
 		},
@@ -192,7 +194,7 @@ func TestParseControlLine(t *testing.T) {
 		},
 		{
 			name:      "valid patch control line",
-			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "key": "%s", "sig": "%s", "base": "%s", "target": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase, fakeTarget),
+			input:     fmt.Appendf(nil, `{"sjsonl": "patch", "version": "0.1", "key": "%s", "sig": "%s", "base": "%s", "target": "%s", "rm": ["abc"]}`, fakeKey, fakeSig, fakeBase, fakeTarget),
 			expectErr: false,
 			ctlType:   patch,
 		},
@@ -274,7 +276,7 @@ func TestParseControlLine(t *testing.T) {
 	}{
 		{
 			name:      "real ed25519 signature - valid",
-			input:     fmt.Sprintf(`{"sjsonl": "doc", "key": "%s", "sig": "%s"}`, pubKeyEncoded, sigEncoded),
+			input:     fmt.Sprintf(`{"sjsonl": "doc", "version": "0.1", "key": "%s", "sig": "%s"}`, pubKeyEncoded, sigEncoded),
 			expectErr: false,
 		},
 		{
@@ -628,14 +630,30 @@ func TestE2E(t *testing.T) {
 func TestEmptyInput(t *testing.T) {
 	require := require.New(t)
 
-	// Empty and newline-only input must error, not panic.
-	for _, input := range [][]byte{nil, {}, []byte("\n")} {
+	for _, input := range [][]byte{nil, {}} {
+		// Parsing needs at least a header line.
 		_, err := Parse(input)
-		require.Error(err)
+		require.ErrorIs(err, ErrControlLineNotFound)
+		_, err = ParsePatch(input)
+		require.ErrorIs(err, ErrControlLineNotFound)
 
-		_, err = New(input, testKey())
-		require.Error(err)
+		// An empty document is signable: the message is empty.
+		signed, info, err := Sign(input, testKey())
+		require.NoError(err)
+		require.Equal(1, bytes.Count(signed, []byte("\n")))
+		empty := sha256.Sum256(nil)
+		require.Equal(hex.EncodeToString(empty[:]), info.Hash)
+
+		verified, err := Verify(signed)
+		require.NoError(err)
+		require.Equal(info, verified)
 	}
+
+	// A lone newline is one empty line, not an empty document.
+	_, _, err := Sign([]byte("\n"), testKey())
+	require.ErrorIs(err, ErrEmptyLine)
+	_, err = Parse([]byte("\n"))
+	require.ErrorIs(err, ErrInvalidJSON)
 }
 
 func TestDuplicateLineError(t *testing.T) {
@@ -749,4 +767,85 @@ func setTrailingBits(s string) string {
 // b64 returns the standard base64 encoding of n copies of byte c.
 func b64(c byte, n int) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{c}, n))
+}
+
+func TestWhitespaceIsJSONWhitespace(t *testing.T) {
+	// Only RFC 8259 whitespace is stripped; it does not affect the hash.
+	key := testKey()
+	plain, _, err := Sign([]byte(`{"a":1}`), key)
+	require.NoError(t, err)
+	padded, _, err := Sign([]byte(" \t{\"a\":1}\t \r\n"), key)
+	require.NoError(t, err)
+	require.Equal(t, plain, padded)
+
+	// Other Unicode whitespace is not stripped, leaving invalid JSON.
+	for _, ws := range []string{" ", "\u0085", " ", "\v", "\f"} {
+		_, _, err := Sign([]byte(ws+`{"a":1}`), testKey())
+		require.ErrorIs(t, err, ErrInvalidJSON, "leading %q", ws)
+		_, _, err = Sign([]byte(`{"a":1}`+ws), testKey())
+		require.ErrorIs(t, err, ErrInvalidJSON, "trailing %q", ws)
+	}
+}
+
+func TestCRLFDocument(t *testing.T) {
+	signed, info, err := Sign([]byte("{\"a\":1}\r\n{\"b\":2}\r\n"), testKey())
+	require.NoError(t, err)
+
+	crlf := bytes.ReplaceAll(signed, []byte("\n"), []byte("\r\n"))
+	verified, err := Verify(crlf)
+	require.NoError(t, err)
+	require.Equal(t, info, verified)
+}
+
+func TestInvalidUTF8(t *testing.T) {
+	_, _, err := Sign([]byte("\"\xff\""), testKey())
+	require.ErrorIs(t, err, ErrInvalidUTF8)
+
+	_, err = parseControlLine([]byte("{\"sjsonl\":\"doc\",\"x\":\"\xff\"}"))
+	require.ErrorIs(t, err, ErrInvalidUTF8)
+}
+
+func TestHeaderVersion(t *testing.T) {
+	signed, _, err := Sign([]byte(`{"a":1}`), testKey())
+	require.NoError(t, err)
+	doc := string(signed)
+	require.Contains(t, doc, `"version":"0.1"`)
+
+	for name, repl := range map[string]string{
+		"unknown version": `"version":"0.2"`,
+		"numeric version": `"version":0.1`,
+		"missing version": ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := strings.Replace(doc, `"version":"0.1",`, repl, 1)
+			if repl != "" {
+				bad = strings.Replace(doc, `"version":"0.1"`, repl, 1)
+			}
+			_, err := Verify([]byte(bad))
+			require.ErrorIs(t, err, ErrUnsupportedVersion)
+		})
+	}
+}
+
+func TestHeaderDuplicateKeys(t *testing.T) {
+	signed, _, err := Sign([]byte(`{"a":1}`), testKey())
+	require.NoError(t, err)
+	header, rest, _ := strings.Cut(string(signed), "\n")
+
+	for name, extra := range map[string]string{
+		"repeated sjsonl":  `"sjsonl":"patch",`,
+		"repeated version": `"version":"0.1",`,
+		"escaped repeat":   `"sjsonl":"doc",`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := "{" + extra + header[1:] + "\n" + rest
+			_, err := Verify([]byte(bad))
+			require.ErrorIs(t, err, ErrDuplicateHeaderKey)
+		})
+	}
+}
+
+func TestHeaderMustBeObject(t *testing.T) {
+	_, err := parseControlLine([]byte(`["sjsonl","doc"]`))
+	require.ErrorIs(t, err, ErrInvalidJSON)
 }
